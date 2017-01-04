@@ -1,8 +1,6 @@
 ;;;; -*- Mode: lisp; indent-tabs-mode: nil -*-
 ;;;
-;;; package.lisp --- CFFI-TESTS package definition.
-;;;
-;;; Copyright (C) 2005-2006, James Bielman  <jamesjb@jamesjb.com>
+;;; Copyright (C) 2015, Attila Lendvai <attila@lendvai.name>
 ;;;
 ;;; Permission is hereby granted, free of charge, to any person
 ;;; obtaining a copy of this software and associated documentation
@@ -25,9 +23,30 @@
 ;;; DEALINGS IN THE SOFTWARE.
 ;;;
 
-(in-package #:cl-user)
-
-(defpackage #:cffi-tests
-  (:use #:cl #:cffi #:cffi-sys #:regression-test)
-  (:export #:do-tests #:run-cffi-tests #:run-all-cffi-tests)
-  (:shadow #:deftest))
+(uiop:define-package #:cffi/c2ffi
+  (:mix #:uiop
+        #:alexandria
+        #:common-lisp)
+  (:import-from :asdf
+                #:cl-source-file
+                #:output-file
+                #:output-files
+                #:input-files
+                #:perform
+                #:compile-op
+                #:load-op
+                #:load-source-op
+                #:prepare-op
+                #:component-pathname
+                #:component-depends-on
+                #:downward-operation
+                #:load-system
+                #:component-loaded-p)
+  (:export
+   #:c2ffi-file
+   #:default-ffi-name-transformer
+   #:default-ffi-type-transformer
+   #:change-case-to-readtable-case
+   #:camelcased?
+   #:camelcase-to-dash-separated
+   #:maybe-camelcase-to-dash-separated))

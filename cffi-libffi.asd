@@ -40,12 +40,9 @@
   ((:module libffi
     :serial t
     :components
-    ((:file "init")
-     (cffi-grovel:grovel-file
-      "libffi"
-      :pathname #+unix "libffi-unix" #+windows "libffi-win32")
-     (:file "built-in-types")
-     (:file "cstruct")
-     (:file "cif")
-     (:file "functions"))))
+    ((:file "libffi")
+     (cffi-grovel:grovel-file "libffi-types")
+     (:file "libffi-functions")
+     (:file "type-descriptors")
+     (:file "funcall"))))
   :depends-on (#:cffi #:cffi-grovel #:trivial-features))

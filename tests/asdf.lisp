@@ -1,8 +1,8 @@
 ;;;; -*- Mode: lisp; indent-tabs-mode: nil -*-
 ;;;
-;;; package.lisp --- CFFI-TESTS package definition.
+;;; asdf.lisp --- CFFI-Grovel asdf support tests.
 ;;;
-;;; Copyright (C) 2005-2006, James Bielman  <jamesjb@jamesjb.com>
+;;; Copyright (C) 2015, Luis Oliveira  <loliveira@common-lisp.net>
 ;;;
 ;;; Permission is hereby granted, free of charge, to any person
 ;;; obtaining a copy of this software and associated documentation
@@ -25,9 +25,18 @@
 ;;; DEALINGS IN THE SOFTWARE.
 ;;;
 
-(in-package #:cl-user)
+(in-package #:cffi-tests)
 
-(defpackage #:cffi-tests
-  (:use #:cl #:cffi #:cffi-sys #:regression-test)
-  (:export #:do-tests #:run-cffi-tests #:run-all-cffi-tests)
-  (:shadow #:deftest))
+#.(when (cffi-toolchain::static-ops-enabled-p)
+    '(deftest test-static-program
+      (progn
+        (asdf:operate :static-program-op :cffi-tests/example)
+        (let ((program (asdf:output-file :static-program-op :cffi-tests/example)))
+          (uiop:run-program `(,(native-namestring program) "1" "2 3") :output :lines)))
+      ("Arguments: 1 \"2 3\"" "hello, world!") nil 0))
+
+(deftest test-asdf-load
+    (progn
+      (asdf:load-system :cffi-tests/example)
+      (uiop:symbol-call :cffi-example :check-groveller))
+  nil)

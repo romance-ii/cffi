@@ -1,6 +1,6 @@
 ;;;; -*- Mode: lisp; indent-tabs-mode: nil -*-
 ;;;
-;;; package.lisp --- CFFI-TESTS package definition.
+;;; package.lisp --- CFFI-EXAMPLES package definition.
 ;;;
 ;;; Copyright (C) 2005-2006, James Bielman  <jamesjb@jamesjb.com>
 ;;;
@@ -25,9 +25,6 @@
 ;;; DEALINGS IN THE SOFTWARE.
 ;;;
 
-(in-package #:cl-user)
-
-(defpackage #:cffi-tests
-  (:use #:cl #:cffi #:cffi-sys #:regression-test)
-  (:export #:do-tests #:run-cffi-tests #:run-all-cffi-tests)
-  (:shadow #:deftest))
+(defpackage #:cffi-example
+  (:use #:cl #:cffi #:cffi-sys)
+  (:export #:check-groveller #:entry-point))

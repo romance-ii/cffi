@@ -202,7 +202,7 @@ The string must be freed with FOREIGN-STRING-FREE."
   (foreign-free ptr))
 
 (defmacro with-foreign-string ((var-or-vars lisp-string &rest args) &body body)
-  "VAR-OR-VARS is not evaluated ans should a list of the form
+  "VAR-OR-VARS is not evaluated and should be a list of the form
 \(VAR &OPTIONAL BYTE-SIZE-VAR) or just a VAR symbol.  VAR is
 bound to a foreign string containing LISP-STRING in BODY.  When
 BYTE-SIZE-VAR is specified then bind the C buffer size
@@ -284,6 +284,16 @@ buffer along with ARGS." ; fix wording, sigh
 (defmethod free-translated-object (ptr (type foreign-string-type) free-p)
   (when free-p
     (foreign-string-free ptr)))
+
+(defmethod expand-to-foreign-dyn-indirect
+    (value var body (type foreign-string-type))
+  (alexandria:with-gensyms (str)
+    (expand-to-foreign-dyn
+     value
+     str
+     (list 
+      (expand-to-foreign-dyn-indirect str var body (parse-type :pointer)))
+     type)))
 
 ;;;# STRING+PTR
 

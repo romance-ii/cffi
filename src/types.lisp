@@ -30,6 +30,11 @@
 
 ;;;# Built-In Types
 
+;; NOTE: In the C standard there's a "signed-char":
+;; https://stackoverflow.com/questions/436513/char-signed-char-char-unsigned-char
+;; and "char" may be either signed or unsigned, i.e. treating it as a small int
+;; is not wise. At the level of CFFI we can safely ignore this and assume that
+;; :char is mapped to "signed-char" by the CL implementation under us.
 (define-built-in-foreign-type :char)
 (define-built-in-foreign-type :unsigned-char)
 (define-built-in-foreign-type :short)
@@ -98,10 +103,6 @@
 ;;; When some lisp other than SCL supports :long-double we should
 ;;; use #-cffi-sys::no-long-double here instead.
 #+(and scl long-float) (define-built-in-foreign-type :long-double)
-
-;;; Lists of built-in types
-;;; LMH should these be added to documentation?
-(export '(*other-builtin-types* *built-in-integer-types* *built-in-float-types*))
 
 (defparameter *possible-float-types* '(:float :double :long-double))
 
@@ -207,8 +208,9 @@ to open-code (SETF MEM-REF) forms."
         #+cffi-sys::no-long-long
         (when (member ctype '(:long-long :unsigned-long-long))
           (return-from mem-set form))
-        (if (aggregatep parsed-type)    ; XXX: skip for now.
-            form      ; use expand-into-foreign-memory when available.
+        (if (aggregatep parsed-type)
+            (expand-into-foreign-memory
+             value parsed-type `(inc-pointer ,ptr ,offset))
             `(%mem-set ,(expand-to-foreign value parsed-type)
                        ,ptr ,ctype ,offset)))
       form))
@@ -337,9 +339,57 @@ to open-code (SETF MEM-REF) forms."
               (floor idx (nth dim-index dimensions)))
         finally (return indexes)))
 
+(defun foreign-alloc (type &key (initial-element nil initial-element-p)
+                      (initial-contents nil initial-contents-p)
+                      (count 1 count-p) null-terminated-p)
+  "Allocate enough memory to hold COUNT objects of type TYPE. If
+INITIAL-ELEMENT is supplied, each element of the newly allocated
+memory is initialized with its value. If INITIAL-CONTENTS is supplied,
+each of its elements will be used to initialize the contents of the
+newly allocated memory."
+  (let (contents-length)
+    ;; Some error checking, etc...
+    (when (and null-terminated-p
+               (not (eq (canonicalize-foreign-type type) :pointer)))
+      (error "Cannot use :NULL-TERMINATED-P with non-pointer types."))
+    (when (and initial-element-p initial-contents-p)
+      (error "Cannot specify both :INITIAL-ELEMENT and :INITIAL-CONTENTS"))
+    (when initial-contents-p
+      (setq contents-length (length initial-contents))
+      (if count-p
+          (assert (>= count contents-length))
+          (setq count contents-length)))
+    ;; Everything looks good.
+    (let ((ptr (%foreign-alloc (* (foreign-type-size type)
+                                  (if null-terminated-p (1+ count) count)))))
+      (when initial-element-p
+        (dotimes (i count)
+          (setf (mem-aref ptr type i) initial-element)))
+      (when initial-contents-p
+        (dotimes (i contents-length)
+          (setf (mem-aref ptr type i) (elt initial-contents i))))
+      (when null-terminated-p
+        (setf (mem-aref ptr :pointer count) (null-pointer)))
+      ptr)))
+
+;;; Simple compiler macro that kicks in when TYPE is constant and only
+;;; the COUNT argument is passed.  (Note: hard-coding the type's size
+;;; into the fasl will likely break CLISP fasl cross-platform
+;;; compatibilty.)
+(define-compiler-macro foreign-alloc (&whole form type &rest args
+                                      &key (count 1 count-p) &allow-other-keys)
+  (if (or (and count-p (<= (length args) 2)) (null args))
+      (cond
+        ((and (constantp type) (constantp count))
+         `(%foreign-alloc ,(* (eval count) (foreign-type-size (eval type)))))
+        ((constantp type)
+         `(%foreign-alloc (* ,count ,(foreign-type-size (eval type)))))
+        (t form))
+      form))
+
 (defun lisp-array-to-foreign (array pointer array-type)
   "Copy elements from a Lisp array to POINTER."
-  (let* ((type (follow-typedefs (parse-type array-type)))
+  (let* ((type (ensure-parsed-base-type array-type))
          (el-type (element-type type))
          (dimensions (dimensions type)))
     (loop with foreign-type-size = (array-element-size type)
@@ -354,7 +404,7 @@ to open-code (SETF MEM-REF) forms."
   "Copy elements from ptr into a Lisp array. If POINTER is a null
 pointer, returns NIL."
   (unless (null-pointer-p pointer)
-    (let* ((type (follow-typedefs (parse-type array-type)))
+    (let* ((type (ensure-parsed-base-type array-type))
            (el-type (element-type type))
            (dimensions (dimensions type))
            (array (make-array dimensions)))
@@ -372,7 +422,7 @@ pointer, returns NIL."
   "Allocate a foreign array containing the elements of lisp array.
 The foreign array must be freed with foreign-array-free."
   (check-type array array)
-  (let* ((type (follow-typedefs (parse-type array-type)))
+  (let* ((type (ensure-parsed-base-type array-type))
          (ptr (foreign-alloc (element-type type)
                              :count (reduce #'* (dimensions type)))))
     (lisp-array-to-foreign array ptr array-type)
@@ -385,21 +435,21 @@ The foreign array must be freed with foreign-array-free."
 (defmacro with-foreign-array ((var lisp-array array-type) &body body)
   "Bind var to a foreign array containing lisp-array elements in body."
   (with-unique-names (type)
-    `(let ((,type (follow-typedefs (parse-type ,array-type))))
+    `(let ((,type (ensure-parsed-base-type ,array-type)))
        (with-foreign-pointer (,var (* (reduce #'* (dimensions ,type))
                                       (array-element-size ,type)))
          (lisp-array-to-foreign ,lisp-array ,var ,array-type)
          ,@body))))
 
 (defun foreign-aref (ptr array-type &rest indexes)
-  (let* ((type (follow-typedefs (parse-type array-type)))
+  (let* ((type (ensure-parsed-base-type array-type))
          (offset (* (array-element-size type)
                     (apply #'indexes-to-row-major-index
                            (dimensions type) indexes))))
     (mem-ref ptr (element-type type) offset)))
 
 (defun (setf foreign-aref) (value ptr array-type &rest indexes)
-  (let* ((type (follow-typedefs (parse-type array-type)))
+  (let* ((type (ensure-parsed-base-type array-type))
          (offset (* (array-element-size type)
                     (apply #'indexes-to-row-major-index
                            (dimensions type) indexes))))
@@ -480,7 +530,7 @@ The foreign array must be freed with foreign-array-free."
 (defun foreign-slot-names (type)
   "Returns a list of TYPE's slot names in no particular order."
   (loop for value being the hash-values
-        in (slots (follow-typedefs (parse-type type)))
+        in (slots (ensure-parsed-base-type type))
         collect (slot-name value)))
 
 ;;;### Simple Slots
@@ -538,7 +588,9 @@ The foreign array must be freed with foreign-array-free."
 
 (defmethod foreign-struct-slot-set-form (value ptr (slot aggregate-struct-slot))
   "Return a form to get the value of an aggregate SLOT relative to PTR."
-  `(setf (foreign-struct-slot-value ,ptr ',(slot-name slot)) ,value))
+  `(translate-aggregate-to-foreign (inc-pointer ,ptr ,(slot-offset slot))
+                                   ,value
+                                   ,(parse-type (slot-type slot))))
 
 ;;;## Defining Foreign Structures
 
@@ -615,6 +667,14 @@ The foreign array must be freed with foreign-array-free."
         offset
         (+ offset (- align rem)))))
 
+(defmacro with-tentative-type-definition ((name value namespace) &body body)
+  (once-only (name namespace)
+    `(unwind-protect-case ()
+          (progn
+            (notice-foreign-type ,name ,value ,namespace)
+            ,@body)
+       (:abort (undefine-foreign-type ,name ,namespace)))))
+
 (defun notice-foreign-struct-definition (name options slots)
   "Parse and install a foreign structure definition."
   (destructuring-bind (&key size (class 'foreign-struct-type))
@@ -623,28 +683,30 @@ The foreign array must be freed with foreign-array-free."
           (current-offset 0)
           (max-align 1)
           (firstp t))
-      ;; determine offsets
-      (dolist (slotdef slots)
-        (destructuring-bind (slotname type &key (count 1) offset) slotdef
-          (when (eq (canonicalize-foreign-type type) :void)
-            (error "void type not allowed in structure definition: ~S" slotdef))
-          (setq current-offset
-                (or offset
-                    (adjust-for-alignment type current-offset :normal firstp)))
-          (let* ((slot (make-struct-slot slotname current-offset type count))
-                 (align (get-alignment (slot-type slot) :normal firstp)))
-            (setf (gethash slotname (slots struct)) slot)
-            (when (> align max-align)
-              (setq max-align align)))
-          (incf current-offset (* count (foreign-type-size type))))
-        (setq firstp nil))
-      ;; calculate padding and alignment
-      (setf (alignment struct) max-align) ; See point 1 above.
-      (let ((tail-padding (- max-align (rem current-offset max-align))))
-        (unless (= tail-padding max-align) ; See point 3 above.
-          (incf current-offset tail-padding)))
-      (setf (size struct) (or size current-offset))
-      (notice-foreign-type name struct :struct))))
+      (with-tentative-type-definition (name struct :struct)
+        ;; determine offsets
+        (dolist (slotdef slots)
+          (destructuring-bind (slotname type &key (count 1) offset) slotdef
+            (when (eq (canonicalize-foreign-type type) :void)
+              (simple-foreign-type-error type :struct
+                                         "In struct ~S: void type not allowed in field ~S"
+                                         name slotdef))
+            (setq current-offset
+                  (or offset
+                      (adjust-for-alignment type current-offset :normal firstp)))
+            (let* ((slot (make-struct-slot slotname current-offset type count))
+                   (align (get-alignment (slot-type slot) :normal firstp)))
+              (setf (gethash slotname (slots struct)) slot)
+              (when (> align max-align)
+                (setq max-align align)))
+            (incf current-offset (* count (foreign-type-size type))))
+          (setq firstp nil))
+        ;; calculate padding and alignment
+        (setf (alignment struct) max-align) ; See point 1 above.
+        (let ((tail-padding (- max-align (rem current-offset max-align))))
+          (unless (= tail-padding max-align) ; See point 3 above.
+            (incf current-offset tail-padding)))
+        (setf (size struct) (or size current-offset))))))
 
 (defun generate-struct-accessors (name conc-name slot-names)
   (loop with pointer-arg = (symbolicate '#:pointer-to- name)
@@ -691,15 +753,23 @@ The foreign array must be freed with foreign-array-free."
 
 (defun get-slot-info (type slot-name)
   "Return the slot info for SLOT-NAME or raise an error."
-  (let* ((struct (follow-typedefs (parse-type type)))
+  (let* ((struct (ensure-parsed-base-type type))
          (info (gethash slot-name (slots struct))))
     (unless info
-      (error "Undefined slot ~A in foreign type ~A." slot-name type))
+      (simple-foreign-type-error type :struct
+                                 "Undefined slot ~A in foreign type ~A."
+                                 slot-name type))
     info))
 
 (defun foreign-slot-pointer (ptr type slot-name)
   "Return the address of SLOT-NAME in the structure at PTR."
   (foreign-struct-slot-pointer ptr (get-slot-info type slot-name)))
+
+(define-compiler-macro foreign-slot-pointer (&whole whole ptr type slot-name)
+  (if (and (constantp type) (constantp slot-name))
+      (foreign-struct-slot-pointer-form
+       ptr (get-slot-info (eval type) (eval slot-name)))
+      whole))
 
 (defun foreign-slot-type (type slot-name)
   "Return the type of SLOT in a struct TYPE."
@@ -766,12 +836,23 @@ The foreign array must be freed with foreign-array-free."
 
 (defmacro with-foreign-slots ((vars ptr type) &body body)
   "Create local symbol macros for each var in VARS to reference
-foreign slots in PTR of TYPE.  Similar to WITH-SLOTS."
+foreign slots in PTR of TYPE. Similar to WITH-SLOTS.
+Each var can be of the form: slot-name - in which case slot-name will
+be bound to the value of the slot or: (:pointer slot-name) - in which
+case slot-name will be bound to the pointer to that slot."
   (let ((ptr-var (gensym "PTR")))
     `(let ((,ptr-var ,ptr))
        (symbol-macrolet
-           ,(loop for var in vars
-                  collect `(,var (foreign-slot-value ,ptr-var ',type ',var)))
+           ,(loop :for var :in vars
+              :collect
+              (if (listp var)
+                  (if (eq (first var) :pointer)
+                      `(,(second var) (foreign-slot-pointer
+                                       ,ptr-var ',type ',(second var)))
+                      (error
+                       "Malformed slot specification ~a; must be:`name' or `(:pointer name)'"
+                       var))
+                  `(,var (foreign-slot-value ,ptr-var ',type ',var))))
          ,@body))))
 
 ;;; We could add an option to define a struct instead of a class, in
@@ -817,21 +898,23 @@ slots will be defined and stored."
     (let ((union (make-instance 'foreign-union-type :name name))
           (max-size 0)
           (max-align 0))
-      (dolist (slotdef slots)
-        (destructuring-bind (slotname type &key (count 1)) slotdef
-          (when (eq (canonicalize-foreign-type type) :void)
-            (error "void type not allowed in union definition: ~S" slotdef))
-          (let* ((slot (make-struct-slot slotname 0 type count))
-                 (size (* count (foreign-type-size type)))
-                 (align (foreign-type-alignment (slot-type slot))))
-            (setf (gethash slotname (slots union)) slot)
-            (when (> size max-size)
-              (setf max-size size))
-            (when (> align max-align)
-              (setf max-align align)))))
-      (setf (size union) (or size max-size))
-      (setf (alignment union) max-align)
-      (notice-foreign-type name union :union))))
+      (with-tentative-type-definition (name union :union)
+        (dolist (slotdef slots)
+          (destructuring-bind (slotname type &key (count 1)) slotdef
+            (when (eq (canonicalize-foreign-type type) :void)
+              (simple-foreign-type-error name :struct
+                                         "In union ~S: void type not allowed in field ~S"
+                                         name slotdef))
+            (let* ((slot (make-struct-slot slotname 0 type count))
+                   (size (* count (foreign-type-size type)))
+                   (align (foreign-type-alignment (slot-type slot))))
+              (setf (gethash slotname (slots union)) slot)
+              (when (> size max-size)
+                (setf max-size size))
+              (when (> align max-align)
+                (setf max-align align)))))
+        (setf (size union) (or size max-size))
+        (setf (alignment union) max-align)))))
 
 (define-parse-method :union (name)
   (funcall (find-type-parser name :union)))
@@ -853,54 +936,6 @@ slots will be defined and stored."
 (defmethod foreign-type-alignment (type)
   "Return the alignment in bytes of a foreign type."
   (foreign-type-alignment (parse-type type)))
-
-(defun foreign-alloc (type &key (initial-element nil initial-element-p)
-                      (initial-contents nil initial-contents-p)
-                      (count 1 count-p) null-terminated-p)
-  "Allocate enough memory to hold COUNT objects of type TYPE. If
-INITIAL-ELEMENT is supplied, each element of the newly allocated
-memory is initialized with its value. If INITIAL-CONTENTS is supplied,
-each of its elements will be used to initialize the contents of the
-newly allocated memory."
-  (let (contents-length)
-    ;; Some error checking, etc...
-    (when (and null-terminated-p
-               (not (eq (canonicalize-foreign-type type) :pointer)))
-      (error "Cannot use :NULL-TERMINATED-P with non-pointer types."))
-    (when (and initial-element-p initial-contents-p)
-      (error "Cannot specify both :INITIAL-ELEMENT and :INITIAL-CONTENTS"))
-    (when initial-contents-p
-      (setq contents-length (length initial-contents))
-      (if count-p
-          (assert (>= count contents-length))
-          (setq count contents-length)))
-    ;; Everything looks good.
-    (let ((ptr (%foreign-alloc (* (foreign-type-size type)
-                                  (if null-terminated-p (1+ count) count)))))
-      (when initial-element-p
-        (dotimes (i count)
-          (setf (mem-aref ptr type i) initial-element)))
-      (when initial-contents-p
-        (dotimes (i contents-length)
-          (setf (mem-aref ptr type i) (elt initial-contents i))))
-      (when null-terminated-p
-        (setf (mem-aref ptr :pointer count) (null-pointer)))
-      ptr)))
-
-;;; Simple compiler macro that kicks in when TYPE is constant and only
-;;; the COUNT argument is passed.  (Note: hard-coding the type's size
-;;; into the fasl will likely break CLISP fasl cross-platform
-;;; compatibilty.)
-(define-compiler-macro foreign-alloc (&whole form type &rest args
-                                      &key (count 1 count-p) &allow-other-keys)
-  (if (or (and count-p (<= (length args) 2)) (null args))
-      (cond
-        ((and (constantp type) (constantp count))
-         `(%foreign-alloc ,(* (eval count) (foreign-type-size (eval type)))))
-        ((constantp type)
-         `(%foreign-alloc (* ,count ,(foreign-type-size (eval type)))))
-        (t form))
-      form))
 
 (defmacro with-foreign-object ((var type &optional (count 1)) &body body)
   "Bind VAR to a pointer to COUNT objects of TYPE during BODY.
@@ -978,6 +1013,9 @@ The buffer has dynamic extent and may be stack allocated."
   (if (constantp value) ; very unlikely, heh
       (not (zerop (eval value)))
       `(not (zerop ,value))))
+
+;;; Boolean type that represents C99 _Bool
+(defctype :bool (:boolean :char))
 
 ;;;# Typedefs for built-in types.
 

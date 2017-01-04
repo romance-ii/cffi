@@ -38,13 +38,6 @@
                    (let ((slot (gethash name (structure-slots type))))
                      (convert-to-foreign value (slot-type slot)))))))
 
-(defun convert-into-foreign-memory (value type ptr)
-  (let ((ptype (parse-type type)))
-    (if (typep ptype 'foreign-built-in-type)
-        value
-        (translate-into-foreign-memory value ptype ptr)))
-  ptr)
-
 (defmethod translate-to-foreign (value (type foreign-struct-type))
   (let ((ptr (foreign-alloc type)))
     (translate-into-foreign-memory value type ptr)
@@ -74,7 +67,6 @@
                 freep))
     (foreign-free ptr)))
 
-(export 'define-translation-method)
 (defmacro define-translation-method ((object type method) &body body)
   "Define a translation method for the foreign structure type; 'method is one of :into, :from, or :to, meaning relation to foreign memory.  If :into, the variable 'pointer is the foreign pointer.  Note: type must be defined and loaded before this macro is expanded, and just the bare name (without :struct) should be specified."
   (let ((tclass (class-name (class-of (cffi::parse-type `(:struct ,type))))))
@@ -139,5 +131,3 @@
        (with-foreign-slots (,slot-names ,value-symbol ,struct-name)
          ,from-form))))
 |#
-
-

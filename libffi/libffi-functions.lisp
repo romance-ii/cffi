@@ -1,8 +1,8 @@
 ;;;; -*- Mode: lisp; indent-tabs-mode: nil -*-
 ;;;
-;;; init.lisp --- Load libffi and define #'libffi-type-pointer
+;;; init.lisp --- Load libffi and define basics
 ;;;
-;;; Copyright (C) 2009, 2011 Liam M. Healy
+;;; Copyright (C) 2009, 2010, 2011 Liam Healy  <lhealy@common-lisp.net>
 ;;;
 ;;; Permission is hereby granted, free of charge, to any person
 ;;; obtaining a copy of this software and associated documentation
@@ -27,25 +27,17 @@
 
 (in-package #:cffi)
 
-(cffi:define-foreign-library (libffi)
-  (:darwin (:or "libffi.dylib" "libffi32.dylib"))
-  (:unix (:or "libffi.so.6" "libffi32.so.6" "libffi.so.5" "libffi32.so.5"))
-  (:windows (:or "libffi-6.dll" "libffi-5.dll" "libffi.dll"))
-  (t (:default "libffi")))
+;;; See file:///usr/share/doc/libffi-dev/html/The-Basics.html#The-Basics
 
-(cffi:load-foreign-library 'libffi)
+(defcfun ("ffi_prep_cif" libffi/prep-cif) status
+  (ffi-cif :pointer)
+  (ffi-abi abi)
+  (nargs :uint)
+  (rtype :pointer)
+  (argtypes :pointer))
 
-(defvar *libffi-type-pointer* (make-hash-table))
-
-(defgeneric libffi-type-pointer (object)
-  (:documentation "The type pointer defined by libffi.")
-  (:method ((object symbol))
-    (libffi-type-pointer (parse-type object)))
-  (:method (object)
-    (gethash object *libffi-type-pointer*)))
-
-(defun set-libffi-type-pointer (type pointer)
-  "Set the hash table entry for the libffi type pointer."
-  (setf (gethash (if (symbolp type) (parse-type type) type)
-                 *libffi-type-pointer*)
-        pointer))
+(defcfun ("ffi_call" libffi/call) :void
+  (ffi-cif :pointer)
+  (function :pointer)
+  (rvalue :pointer)
+  (avalues :pointer))

@@ -1,8 +1,6 @@
 ;;;; -*- Mode: lisp; indent-tabs-mode: nil -*-
 ;;;
-;;; package.lisp --- CFFI-TESTS package definition.
-;;;
-;;; Copyright (C) 2005-2006, James Bielman  <jamesjb@jamesjb.com>
+;;; package.lisp --- Toolchain DEFPACKAGE.
 ;;;
 ;;; Permission is hereby granted, free of charge, to any person
 ;;; obtaining a copy of this software and associated documentation
@@ -25,9 +23,25 @@
 ;;; DEALINGS IN THE SOFTWARE.
 ;;;
 
-(in-package #:cl-user)
-
-(defpackage #:cffi-tests
-  (:use #:cl #:cffi #:cffi-sys #:regression-test)
-  (:export #:do-tests #:run-cffi-tests #:run-all-cffi-tests)
-  (:shadow #:deftest))
+(uiop:define-package #:cffi-toolchain
+  (:mix #:asdf #:uiop #:common-lisp)
+  (:import-from #:asdf/bundle #:link-op)
+  (:export
+   ;; Variables
+   #:*cc*
+   #:*cc-flags*
+   #:*ld*
+   #:*ld-flags*
+   ;; Functions from c-toolchain
+   #:make-c-file-name
+   #:make-o-file-name
+   #:make-lib-file-name
+   #:make-exe-file-name
+   #:parse-command-flags
+   #:parse-command-flags-list
+   #:invoke
+   #:invoke-cc
+   #:cc-compile
+   #:link-static-library
+   #:link-shared-library
+   #:link-executable))

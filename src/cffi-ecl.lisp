@@ -51,6 +51,7 @@
    #:%foreign-type-alignment
    #:%foreign-type-size
    #:%load-foreign-library
+   #:%close-foreign-library
    #:native-namestring
    #:make-shareable-byte-vector
    #:with-pointer-to-vector-data
@@ -318,7 +319,7 @@ WITH-POINTER-TO-VECTOR-DATA."
 (defun produce-function-pointer-call (pointer types values return-type)
   #-ecl-with-backend
   (progn
-    (if (eq *cffi-dffi-method* :dffi)
+    (if (eq *cffi-ecl-method* :dffi)
         (dffi-function-pointer-call pointer types values return-type)
         (c-inline-function-pointer-call pointer types values return-type)))
   #+ecl-with-backend
@@ -326,7 +327,9 @@ WITH-POINTER-TO-VECTOR-DATA."
      :bytecodes
      ,(dffi-function-pointer-call pointer types values return-type)
      :c/c++
-     ,(c-inline-function-pointer-call pointer types values return-type)))
+     (if (eq *cffi-ecl-method* :dffi)
+         ,(dffi-function-pointer-call pointer types values return-type)
+         ,(c-inline-function-pointer-call pointer types values return-type))))
 
 (defun foreign-funcall-parse-args (args)
   "Return three values, lists of arg types, values, and result type."
@@ -364,7 +367,12 @@ WITH-POINTER-TO-VECTOR-DATA."
       (error "file error while trying to load `~A'" path))))
 
 (defun %close-foreign-library (handle)
-  (error "%CLOSE-FOREIGN-LIBRARY unimplemented."))
+  "Close a foreign library."
+  (handler-case (si::unload-foreign-module handle)
+    (undefined-function ()
+      (restart-case (error "Detected ECL prior to version 15.2.21. ~
+                            Function CFFI:CLOSE-FOREIGN-LIBRARY isn't implemented yet.")
+        (ignore () :report "Continue anyway (foreign library will remain opened).")))))
 
 (defun native-namestring (pathname)
   (namestring pathname))
@@ -393,9 +401,11 @@ WITH-POINTER-TO-VECTOR-DATA."
 (defmacro %defcallback (name rettype arg-names arg-types body
                         &key convention)
   (declare (ignore convention))
-  (let ((cb-name (intern-callback name)))
+  (let ((cb-name (intern-callback name))
+        (cb-type #.(if (> ext:+ecl-version-number+ 160102)
+                       :default :cdecl)))
     `(progn
-       (ffi:defcallback (,cb-name :cdecl)
+       (ffi:defcallback (,cb-name ,cb-type)
            ,(cffi-type->ecl-type rettype)
            ,(mapcar #'list arg-names
                     (mapcar #'cffi-type->ecl-type arg-types))

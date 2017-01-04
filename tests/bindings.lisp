@@ -40,7 +40,7 @@
 
 (define-foreign-library (libfsbv :type :test)
   (:darwin (:or "libfsbv.dylib" "libfsbv32.dylib"))
-  (:unix (:or "libfsbv.so" "libfsbv32.so"))
+  (:unix (:or "libfsbv.so" "libfsbv_32.so"))
   (:windows "libfsbv.dll")
   (t (:default "libfsbv")))
 
@@ -51,6 +51,17 @@
   #+(and lispworks darwin) ; not sure why the full path is necessary
   (:darwin "/usr/lib/libm.dylib")
   (t (:default "libm")))
+
+(defmacro deftest (name &rest body)
+  (destructuring-bind (name &key expected-to-fail)
+      (alexandria:ensure-list name)
+    (let ((result `(rt:deftest ,name ,@body)))
+      (when expected-to-fail
+        (setf result `(progn
+                        (when ,expected-to-fail
+                          (pushnew ',name rt::*expected-failures*))
+                        ,result)))
+      result)))
 
 (defun call-within-new-thread (fn &rest args)
   (let (result
@@ -90,7 +101,7 @@
   (let ((*foreign-library-directories* (list (load-directory))))
     (load-foreign-library 'libtest)
     (load-foreign-library 'libtest2)
-    #+fsbv (load-foreign-library 'libfsbv)
+    (load-foreign-library 'libfsbv)
     (load-foreign-library 'libc)
     #+(or abcl lispworks) (load-foreign-library 'libm)))
 
@@ -124,7 +135,13 @@
   (let ((regression-test::*compile-tests* compiled)
         (*package* (find-package '#:cffi-tests)))
     (format t "~&;;; running tests (~Acompiled)" (if compiled "" "un"))
-    (do-tests)))
+    (do-tests)
+    (set-difference (regression-test:pending-tests)
+                    regression-test::*expected-failures*)))
+
+(defun run-all-cffi-tests ()
+  (append (run-cffi-tests :compiled nil)
+          (run-cffi-tests :compiled t)))
 
 (defmacro expecting-error (&body body)
   `(handler-case (progn ,@body :no-error)

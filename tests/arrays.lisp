@@ -1,8 +1,9 @@
 ;;;; -*- Mode: lisp; indent-tabs-mode: nil -*-
 ;;;
-;;; package.lisp --- CFFI-TESTS package definition.
+;;; arrays.lisp --- Tests for foreign arrays.
 ;;;
 ;;; Copyright (C) 2005-2006, James Bielman  <jamesjb@jamesjb.com>
+;;; Copyright (C) 2005-2007, Luis Oliveira  <loliveira@common-lisp.net>
 ;;;
 ;;; Permission is hereby granted, free of charge, to any person
 ;;; obtaining a copy of this software and associated documentation
@@ -25,9 +26,12 @@
 ;;; DEALINGS IN THE SOFTWARE.
 ;;;
 
-(in-package #:cl-user)
+;;;#Foreign Array Conversion Tests
+;;;
 
-(defpackage #:cffi-tests
-  (:use #:cl #:cffi #:cffi-sys #:regression-test)
-  (:export #:do-tests #:run-cffi-tests #:run-all-cffi-tests)
-  (:shadow #:deftest))
+(in-package #:cffi-tests)
+
+(deftest array.round-trip
+    (with-foreign-array (ptr #(1 2 3 4 5) '(:array :int32 5))
+      (foreign-array-to-lisp ptr '(:array :int32 5)))
+  #(1 2 3 4 5))

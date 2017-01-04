@@ -54,7 +54,7 @@
        (parse-type (car types)))))
 
 (defun parse-args-and-types (args)
-  "Returns 4 values. Types, canonicalized types, args and return type."
+  "Returns 4 values: types, canonicalized types, args and return type."
   (let* ((len (length args))
          (return-type (if (oddp len) (lastcar args) :void)))
     (loop repeat (floor len 2)
@@ -90,9 +90,10 @@
 
 (defun structure-by-value-p (ctype)
   "A structure or union is to be called or returned by value."
-  (typep (follow-typedefs (parse-type ctype))
-         '(or foreign-struct-type foreign-union-type
-           #+cffi::no-long-long emulated-llong-type)))
+  (let ((actual-type (ensure-parsed-base-type ctype)))
+    (or (and (typep actual-type 'foreign-struct-type)
+             (not (bare-struct-type-p actual-type)))
+        #+cffi::no-long-long (typep actual-type 'emulated-llong-type))))
 
 (defun fn-call-by-value-p (argument-types return-type)
   "One or more structures in the arguments or return from the function are called by value."
@@ -113,23 +114,24 @@
       (parse-args-and-types args)
     (let ((syms (make-gensym-list (length fargs)))
           (fsbvp (fn-call-by-value-p ctypes rettype)))
-      (translate-objects
-       syms fargs types rettype
-       (if fsbvp
-           ;; Structures by value call through *foreign-structures-by-value*
-           (funcall *foreign-structures-by-value*
-                    thing
-                    syms
-                    rettype
-                    ctypes
-                    pointerp)
+      (if fsbvp
+          ;; Structures by value call through *foreign-structures-by-value*
+          (funcall *foreign-structures-by-value*
+                   thing
+                   fargs
+                   syms
+                   types
+                   rettype
+                   ctypes
+                   pointerp)
+          (translate-objects
+           syms fargs types rettype
            `(,(if pointerp '%foreign-funcall-pointer '%foreign-funcall)
              ;; No structures by value, direct call
              ,thing
              (,@(mapcan #'list ctypes syms)
               ,(canonicalize-foreign-type rettype))
-             ,@(parse-function-options options :pointer pointerp)))
-       fsbvp))))
+             ,@(parse-function-options options :pointer pointerp)))))))
 
 (defmacro foreign-funcall (name-and-options &rest args)
   "Wrapper around %FOREIGN-FUNCALL that translates its arguments."
@@ -265,23 +267,6 @@ arguments and does type promotion for the variadic arguments."
           for p = (position-if #'(lambda (s) (string= s w)) pl)
           when p do (return-from check-prefix (values (nth p pl) (1+ p))))
     (values (first l) 1)))
-
-(defun split-if (test seq &optional (dir :before))
-  (remove-if #'(lambda (x) (equal x (subseq seq 0 0)))
-             (loop for start fixnum = 0
-                     then (if (eq dir :before)
-                              stop
-                              (the fixnum (1+ (the fixnum stop))))
-                   while (< start (length seq))
-                   for stop = (position-if test seq
-                                           :start (if (eq dir :elide)
-                                                      start
-                                                      (the fixnum (1+ start))))
-                   collect (subseq seq start
-                                   (if (and stop (eq dir :after))
-                                       (the fixnum (1+ (the fixnum stop)))
-                                       stop))
-                   while stop)))
 
 (defgeneric translate-camelcase-name (name &key upper-initial-p special-words)
   (:method ((name string) &key upper-initial-p special-words)

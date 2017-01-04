@@ -53,16 +53,66 @@
 (defvar *type-parsers* (make-hash-table :test 'equal)
   "Hash table of defined type parsers.")
 
+(define-condition cffi-error (error)
+  ())
+
+(define-condition foreign-type-error (cffi-error)
+  ((type-name :initarg :type-name
+              :initform (error "Must specify TYPE-NAME.")
+              :accessor foreign-type-error/type-name)
+   (namespace :initarg :namespace
+              :initform :default
+              :accessor foreign-type-error/namespace)))
+
+(defun foreign-type-error/compound-name (e)
+  (let ((name (foreign-type-error/type-name e))
+        (namespace (foreign-type-error/namespace e)))
+    (if (eq namespace :default)
+        name
+        `(,namespace ,name))))
+
+(define-condition simple-foreign-type-error (simple-error foreign-type-error)
+  ())
+
+(defun simple-foreign-type-error (type-name namespace format-control &rest format-arguments)
+  (error 'simple-foreign-type-error
+         :type-name type-name :namespace namespace
+         :format-control format-control :format-arguments format-arguments))
+
+(define-condition undefined-foreign-type-error (foreign-type-error)
+  ()
+  (:report (lambda (e stream)
+             (format stream "Unknown CFFI type ~S" (foreign-type-error/compound-name e)))))
+
+(defun undefined-foreign-type-error (type-name &optional (namespace :default))
+  (error 'undefined-foreign-type-error :type-name type-name :namespace namespace))
+
+;; TODO this is not according to the C namespace rules,
+;; see bug: https://bugs.launchpad.net/cffi/+bug/1527947
+(deftype c-namespace-name ()
+  '(member :default :struct :union))
+
+;; for C namespaces read: https://stackoverflow.com/questions/12579142/type-namespace-in-c
+;; (section 6.2.3 Name spaces of identifiers)
+;; NOTE: :struct is probably an unfortunate name for the tagged (?) namespace
 (defun find-type-parser (symbol &optional (namespace :default))
-  "Return the type parser for SYMBOL."
+  "Return the type parser for SYMBOL. NAMESPACE is either :DEFAULT (for
+variables, functions, and typedefs) or :STRUCT (for structs, unions, and enums)."
+  (check-type symbol (and symbol (not null)))
+  (check-type namespace c-namespace-name)
   (or (gethash (cons namespace symbol) *type-parsers*)
-      (if (eq namespace :default)
-          (error "unknown CFFI type: ~S." symbol)
-          (error "unknown CFFI type: (~S ~S)." namespace symbol))))
+      (undefined-foreign-type-error symbol namespace)))
 
 (defun (setf find-type-parser) (func symbol &optional (namespace :default))
   "Set the type parser for SYMBOL."
+  (check-type symbol (and symbol (not null)))
+  (check-type namespace c-namespace-name)
+  ;; TODO Shall we signal a redefinition warning here?
   (setf (gethash (cons namespace symbol) *type-parsers*) func))
+
+(defun undefine-foreign-type (symbol &optional (namespace :default))
+  (remhash (cons namespace symbol) *type-parsers*)
+  (values))
 
 ;;; Using a generic function would have been nicer but generates lots
 ;;; of style warnings in SBCL.  (Silly reason, yes.)
@@ -215,6 +265,14 @@ Signals an error if FOREIGN-TYPE is undefined."))
 
 ;;;# Structure Type
 
+(defgeneric bare-struct-type-p (foreign-type)
+  (:documentation
+   "Return true if FOREIGN-TYPE is a bare struct type or an alias of a bare struct type. "))
+
+(defmethod bare-struct-type-p ((type foreign-type))
+  "Return true if FOREIGN-TYPE is a bare struct type or an alias of a bare struct type. "
+  nil)
+
 (defclass foreign-struct-type (named-foreign-type)
   ((slots
     ;; Hash table of slots in this structure, keyed by name.
@@ -304,7 +362,7 @@ Signals an error if FOREIGN-TYPE is undefined."))
   ())
 
 (defun follow-typedefs (type)
-  (if (eq (type-of type) 'foreign-typedef)
+  (if (typep type 'foreign-typedef)
       (follow-typedefs (actual-type type))
       type))
 
@@ -348,7 +406,8 @@ Signals an error if FOREIGN-TYPE is undefined."))
     (labels ((%check (cur-type)
                (when (typep cur-type 'foreign-typedef)
                  (when (gethash (name cur-type) seen)
-                   (error "Detected cycle in type ~S." type))
+                   (simple-foreign-type-error type :default
+                                              "Detected cycle in type ~S." type))
                  (setf (gethash (name cur-type) seen) t)
                  (%check (actual-type cur-type)))))
       (%check type))))
@@ -363,6 +422,12 @@ Signals an error if FOREIGN-TYPE is undefined."))
     (when (typep ptype 'enhanced-foreign-type)
       (setf (unparsed-type ptype) type))
     ptype))
+
+(defun ensure-parsed-base-type (type)
+  (follow-typedefs
+   (if (typep type 'foreign-type)
+       type
+       (parse-type type))))
 
 (defun canonicalize-foreign-type (type)
   "Convert TYPE to a built-in type by following aliases.
@@ -453,6 +518,23 @@ Signals an error if the type cannot be resolved."
   (declare (ignore value))
   (values *runtime-translator-form* t))
 
+;;; EXPAND-INTO-FOREIGN-MEMORY
+
+(defgeneric expand-into-foreign-memory (value type ptr)
+  (:method (value type ptr)
+    (declare (ignore type))
+    value))
+
+(defmethod expand-into-foreign-memory :around
+    (value (type translatable-foreign-type) ptr)
+  (let ((*runtime-translator-form*
+         `(translate-into-foreign-memory ,value ,type ,ptr)))
+    (call-next-method)))
+
+(defmethod expand-into-foreign-memory (value (type translatable-foreign-type) ptr)
+  (declare (ignore value))
+  *runtime-translator-form*)
+
 ;;; EXPAND-TO-FOREIGN-DYN
 
 (defgeneric expand-to-foreign-dyn (value var body type)
@@ -516,7 +598,7 @@ Signals an error if the type cannot be resolved."
 
 (defmethod expand-to-foreign-dyn-indirect
     (value var body (type foreign-built-in-type))
-  `(with-foreign-object (,var :pointer)
+  `(with-foreign-object (,var ,type)
      (translate-into-foreign-memory ,value ,type ,var)
      ,@body))
 
@@ -547,6 +629,14 @@ Signals an error if the type cannot be resolved."
       (expand-from-foreign value (parse-type (eval type)))
       `(translate-from-foreign ,value (parse-type ,type))))
 
+(defun convert-into-foreign-memory (value type ptr)
+  (translate-into-foreign-memory value (parse-type type) ptr))
+
+(define-compiler-macro convert-into-foreign-memory (value type ptr)
+  (if (constantp type)
+      (expand-into-foreign-memory value (parse-type (eval type)) ptr)
+      `(translate-into-foreign-memory ,value (parse-type ,type) ,ptr)))
+
 (defun free-converted-object (value type param)
   (free-translated-object value (parse-type type) param))
 
@@ -575,6 +665,9 @@ Signals an error if the type cannot be resolved."
 
 (defmethod expand-to-foreign-dyn (value var body (type enhanced-typedef))
   (expand-to-foreign-dyn value var body (actual-type type)))
+
+(defmethod expand-into-foreign-memory (value (type enhanced-typedef) ptr)
+  (expand-into-foreign-memory value (actual-type type) ptr))
 
 ;;;# User-defined Types and Translations.
 

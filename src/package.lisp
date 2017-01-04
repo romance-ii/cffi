@@ -30,6 +30,7 @@
 (defpackage #:cffi
   (:use #:common-lisp #:cffi-sys #:babel-encodings)
   (:import-from #:alexandria
+                #:compose
                 #:ensure-list
                 #:featurep
                 #:format-symbol
@@ -39,16 +40,25 @@
                 #:lastcar
                 #:make-gensym-list
                 #:make-keyword
+                #:mappend
                 #:once-only
                 #:parse-body
                 #:simple-style-warning
                 #:symbolicate
+                #:unwind-protect-case
                 #:when-let
                 #:with-unique-names)
   (:export
    ;; Types.
    #:foreign-pointer
+
+   ;; FIXME: the following types are undocumented. They should
+   ;; probably be replaced with a proper type introspection API
+   ;; though.
    #:*built-in-foreign-types*
+   #:*other-builtin-types*
+   #:*built-in-integer-types*
+   #:*built-in-float-types*
 
    ;; Primitive pointer operations.
    #:foreign-free
@@ -79,6 +89,15 @@
    #:with-foreign-string
    #:with-foreign-strings
    #:with-foreign-pointer-as-string
+
+   ;; Foreign array operations.
+   ;; TODO: document these
+   #:foreign-array-alloc
+   #:foreign-array-free
+   #:foreign-array-to-lisp
+   #:lisp-array-to-foreign
+   #:with-foreign-array
+   #:foreign-aref
 
    ;; Foreign function operations.
    #:defcfun
@@ -143,6 +162,7 @@
    #:translation-forms-for-class
 
    ;; Extensible foreign type operations.
+   #:define-translation-method          ; FIXME: undocumented
    #:translate-to-foreign
    #:translate-from-foreign
    #:translate-into-foreign-memory
